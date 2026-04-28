@@ -1,0 +1,808 @@
+[1mdiff --git a/lib/rdf-fusion/Cargo.toml b/lib/rdf-fusion/Cargo.toml[m
+[1mindex 01f12c44..123f437b 100644[m
+[1m--- a/lib/rdf-fusion/Cargo.toml[m
+[1m+++ b/lib/rdf-fusion/Cargo.toml[m
+[36m@@ -6,8 +6,9 @@[m [mlicense.workspace = true[m
+ readme = "README.md"[m
+ keywords = ["RDF", "SPARQL", "graph-database", "database"][m
+ categories = ["database-implementations"][m
+[31m-repository = "https://github.com/tobixdev/rdf-fusion"[m
+[31m-documentation = "https://docs.rs/rdf-fusion"[m
+[32m+[m[32mrepository = "https://github.com/oxigraph/oxigraph/tree/main/lib/oxigraph"[m
+[32m+[m[32mhomepage = "https://oxigraph.org/"[m
+[32m+[m[32mdocumentation = "https://docs.rs/oxigraph"[m
+ description = """[m
+ a SPARQL database and RDF toolkit[m
+ """[m
+[36m@@ -16,17 +17,15 @@[m [mrust-version.workspace = true[m
+ [m
+ [dependencies][m
+ datafusion.workspace = true[m
+[31m-rdf-fusion-extensions.workspace = true[m
+[31m-rdf-fusion-encoding.workspace = true[m
+[31m-rdf-fusion-functions.workspace = true[m
+ rdf-fusion-model.workspace = true[m
+ futures.workspace = true[m
+ rdf-fusion-execution.workspace = true[m
+[31m-rdf-fusion-logical.workspace = true[m
+ rdf-fusion-storage.workspace = true[m
+ oxrdfio.workspace = true[m
+ thiserror.workspace = true[m
+ tokio.workspace = true[m
+[32m+[m[32msparesults.workspace = true[m
+[32m+[m[32mspargebra.workspace = true[m
+ [m
+ [dev-dependencies][m
+ codspeed-criterion-compat = { workspace = true, features = ["async_tokio"] }[m
+[36m@@ -41,4 +40,4 @@[m [mrustdoc-args = ["--cfg", "docsrs"][m
+ [m
+ [[bench]][m
+ name = "store"[m
+[31m-harness = false[m
+\ No newline at end of file[m
+[32m+[m[32mharness = false[m
+[1mdiff --git a/lib/rdf-fusion/src/store.rs b/lib/rdf-fusion/src/store.rs[m
+[1mindex c3d3139e..bc1c738a 100644[m
+[1m--- a/lib/rdf-fusion/src/store.rs[m
+[1m+++ b/lib/rdf-fusion/src/store.rs[m
+[36m@@ -1,14 +1,20 @@[m
+[31m-//! API to access an [RDF dataset](https://www.w3.org/TR/rdf11-concepts/#dfn-rdf-dataset).[m
+[32m+[m[32m//! API to access an on-disk [RDF dataset](https://www.w3.org/TR/rdf11-concepts/#dfn-rdf-dataset).[m
+ //![m
+ //! The entry point of the module is the [`Store`] struct.[m
+ //![m
+ //! Usage example:[m
+ //! ```[m
+ //! use rdf_fusion::model::*;[m
+[32m+[m[32m//! use rdf_fusion::sparql::QueryResults;[m
+ //! use rdf_fusion::store::Store;[m
+[31m-//! use rdf_fusion::execution::results::QueryResults;[m
+ //! use futures::StreamExt;[m
+[31m-//![m
+[32m+[m[32m//! use std::collections::HashMap;[m
+[32m+[m[32m//! use spargebra::update::{Update as SparUpdate, GraphUpdateOperation, GraphTarget};[m
+[32m+[m[32m//! use rdf_fusion_execution::sparql::Update;[m
+[32m+[m[32m//! use spargebra::update::{GraphUpdateOperation, GraphTarget};[m
+[32m+[m[32m//! use rdf_fusion_execution::sparql::algebra::GraphUpdateOperation;[m
+[32m+[m[32m//! use rdf_fusion_execution::sparql::algebra::*;[m
+[32m+[m
+ //! # tokio_test::block_on(async {[m
+ //! let store = Store::default();[m
+ //![m
+[36m@@ -31,25 +37,25 @@[m
+ //! ```[m
+ [m
+ use crate::error::{LoaderError, SerializerError};[m
+[32m+[m[32muse crate::sparql::error::QueryEvaluationError;[m
+ use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};[m
+ use datafusion::prelude::SessionConfig;[m
+ use futures::StreamExt;[m
+ use oxrdfio::{RdfParser, RdfSerializer};[m
+[31m-use rdf_fusion_encoding::object_id::{ObjectIdEncoding, ObjectIdMapping};[m
+[32m+[m[32muse rdf_fusion_common::error::StorageError;[m
+ use rdf_fusion_execution::RdfFusionContext;[m
+[31m-use rdf_fusion_execution::results::{QuadStream, QueryResults, QuerySolutionStream};[m
+[31m-use rdf_fusion_execution::sparql::error::QueryEvaluationError;[m
+[32m+[m[32muse rdf_fusion_execution::results::{QuadStream, QuerySolutionStream};[m
+ use rdf_fusion_execution::sparql::{[m
+[31m-    Query, QueryExplanation, QueryOptions, Update, UpdateOptions,[m
+[32m+[m[32m    Query, QueryExplanation, QueryOptions, QueryResults, Update, UpdateOptions,[m
+ };[m
+[31m-use rdf_fusion_model::StorageError;[m
+ use rdf_fusion_model::{[m
+[31m-    GraphNameRef, NamedNodeRef, NamedOrBlankNode, NamedOrBlankNodeRef, Quad, QuadRef,[m
+[31m-    TermRef, Variable,[m
+[32m+[m[32m    BlankNode, GraphName, GraphNameRef, Literal, NamedNode, NamedNodeRef, NamedOrBlankNode,[m
+[32m+[m[32m    NamedOrBlankNodeRef, Quad, QuadRef, Subject, SubjectRef, Term, TermRef, Variable,[m
+ };[m
+ use rdf_fusion_storage::memory::{MemObjectIdMapping, MemQuadStorage};[m
+ use std::io::{Read, Write};[m
+ use std::sync::{Arc, LazyLock};[m
+[32m+[m[32muse spargebra::GraphUpdateOperation;[m
+ [m
+ static QUAD_VARIABLES: LazyLock<Arc<[Variable]>> = LazyLock::new(|| {[m
+     Arc::new([[m
+[36m@@ -67,7 +73,7 @@[m [mstatic QUAD_VARIABLES: LazyLock<Arc<[Variable]>> = LazyLock::new(|| {[m
+ /// Usage example:[m
+ /// ```[m
+ /// use rdf_fusion::model::*;[m
+[31m-/// use rdf_fusion::execution::results::QueryResults;[m
+[32m+[m[32m/// use rdf_fusion::sparql::QueryResults;[m
+ /// use rdf_fusion::store::Store;[m
+ /// use futures::StreamExt;[m
+ ///[m
+[36m@@ -93,7 +99,7 @@[m [mstatic QUAD_VARIABLES: LazyLock<Arc<[Variable]>> = LazyLock::new(|| {[m
+ /// ```[m
+ #[derive(Clone)][m
+ pub struct Store {[m
+[31m-    context: RdfFusionContext,[m
+[32m+[m[32m    engine: RdfFusionContext,[m
+ }[m
+ [m
+ impl Default for Store {[m
+[36m@@ -101,25 +107,230 @@[m [mimpl Default for Store {[m
+         let config = SessionConfig::new()[m
+             .with_batch_size(8192)[m
+             .with_target_partitions(1);[m
+[31m-[m
+[31m-        let object_id_mapping = Arc::new(MemObjectIdMapping::new());[m
+[31m-        let encoding = Arc::new(ObjectIdEncoding::new([m
+[31m-            Arc::clone(&object_id_mapping) as Arc<dyn ObjectIdMapping>[m
+[31m-        ));[m
+[31m-        let storage = MemQuadStorage::new(object_id_mapping, encoding, 8192);[m
+[32m+[m[32m        let object_id_mapping = MemObjectIdMapping::new();[m
+[32m+[m[32m        let storage = MemQuadStorage::new(Arc::new(object_id_mapping), 8192);[m
+         let engine = RdfFusionContext::new([m
+             config,[m
+             RuntimeEnvBuilder::default().build_arc().unwrap(),[m
+             Arc::new(storage),[m
+         );[m
+[31m-        Self { context: engine }[m
+[32m+[m[32m        Self { engine }[m
+[32m+[m[32m    }[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfn convert_quad(q: spargebra::term::Quad) -> Quad {[m
+[32m+[m[32m    Quad::new([m
+[32m+[m[32m        convert_subject(q.subject),[m
+[32m+[m[32m        NamedNode::new_unchecked(q.predicate.as_str()),[m
+[32m+[m[32m        convert_term(q.object),[m
+[32m+[m[32m        convert_graph_name(q.graph_name),[m
+[32m+[m[32m    )[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfn convert_ground_quad(q: spargebra::term::GroundQuad) -> Quad {[m
+[32m+[m[32m    Quad::new([m
+[32m+[m[32m        convert_ground_subject(q.subject),[m
+[32m+[m[32m        NamedNode::new_unchecked(q.predicate.as_str()),[m
+[32m+[m[32m        convert_ground_term(q.object),[m
+[32m+[m[32m        convert_graph_name(q.graph_name),[m
+[32m+[m[32m    )[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfn convert_subject(s: Subject) -> Subject {[m
+[32m+[m[32m    match s {[m
+[32m+[m[32m        Subject::NamedNode(n) => NamedNode::new_unchecked(n.as_str()).into(),[m
+[32m+[m[32m        Subject::BlankNode(b) => BlankNode::new_unchecked(b.as_str()).into(),[m
+[32m+[m[32m        #[allow(unreachable_patterns)][m
+[32m+[m[32m        _ => todo!("RDF-star"),[m
+[32m+[m[32m    }[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfn convert_ground_subject(s: spargebra::term::GroundSubject) -> Subject {[m
+[32m+[m[32m    match s {[m
+[32m+[m[32m        spargebra::term::GroundSubject::NamedNode(n) => NamedNode::new_unchecked(n.as_str()).into(),[m
+[32m+[m[32m        #[allow(unreachable_patterns)][m
+[32m+[m[32m        _ => todo!("RDF-star"),[m
+[32m+[m[32m    }[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfn convert_term(t: Term) -> Term {[m
+[32m+[m[32m    match t {[m
+[32m+[m[32m        Term::NamedNode(n) => NamedNode::new_unchecked(n.as_str()).into(),[m
+[32m+[m[32m        Term::BlankNode(b) => BlankNode::new_unchecked(b.as_str()).into(),[m
+[32m+[m[32m        Term::Literal(l) => convert_literal(l).into(),[m
+[32m+[m[32m        #[allow(unreachable_patterns)][m
+[32m+[m[32m        _ => todo!("RDF-star"),[m
+[32m+[m[32m    }[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfn convert_ground_term(t: spargebra::term::GroundTerm) -> Term {[m
+[32m+[m[32m    match t {[m
+[32m+[m[32m        spargebra::term::GroundTerm::NamedNode(n) => NamedNode::new_unchecked(n.as_str()).into(),[m
+[32m+[m[32m        spargebra::term::GroundTerm::Literal(l) => convert_literal(l).into(),[m
+[32m+[m[32m        #[allow(unreachable_patterns)][m
+[32m+[m[32m        _ => todo!("RDF-star"),[m
+[32m+[m[32m    }[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfn convert_literal(l: Literal) -> Literal {[m
+[32m+[m[32m    if let Some(lang) = l.language() {[m
+[32m+[m[32m        Literal::new_language_tagged_literal_unchecked(l.value(), lang)[m
+[32m+[m[32m    } else if l.datatype().as_str() == "http://www.w3.org/2001/XMLSchema#string" {[m
+[32m+[m[32m        Literal::new_simple_literal(l.value())[m
+[32m+[m[32m    } else {[m
+[32m+[m[32m        Literal::new_typed_literal(l.value(), NamedNode::new_unchecked(l.datatype().as_str()))[m
+     }[m
+ }[m
+ [m
+[32m+[m[32mfn convert_graph_name(g: spargebra::term::GraphName) -> GraphName {[m
+[32m+[m[32m    match g {[m
+[32m+[m[32m        spargebra::term::GraphName::NamedNode(n) => NamedNode::new_unchecked(n.as_str()).into(),[m
+[32m+[m[32m        spargebra::term::GraphName::DefaultGraph => GraphName::DefaultGraph,[m
+[32m+[m[32m    }[m
+[32m+[m[32m}[m
+[32m+[m[32muse rdf_fusion_execution::sparql::QuerySolution;[m
+[32m+[m
+[32m+[m[32mfn instantiate_ground_quad_pattern([m
+[32m+[m[32m    template: &spargebra::term::GroundQuadPattern,[m
+[32m+[m[32m    solution: &QuerySolution,[m
+[32m+[m[32m) -> Option<Quad> {[m
+[32m+[m[32m    let subject = match &template.subject {[m
+[32m+[m[32m        spargebra::term::GroundTermPattern::NamedNode(n) => {[m
+[32m+[m[32m            Subject::from(NamedNode::new_unchecked(n.as_str()))[m
+[32m+[m[32m        }[m
+[32m+[m[32m        spargebra::term::GroundTermPattern::Variable(v) => {[m
+[32m+[m[32m            let term = solution.get(v.as_str())?;[m
+[32m+[m[32m            match term {[m
+[32m+[m[32m                Term::NamedNode(n) => Subject::from(n.clone()),[m
+[32m+[m[32m                Term::BlankNode(b) => Subject::from(b.clone()),[m
+[32m+[m[32m                _ => return None,[m
+[32m+[m[32m            }[m
+[32m+[m[32m        }[m
+[32m+[m[32m        #[allow(unreachable_patterns)][m
+[32m+[m[32m        _ => return None,[m
+[32m+[m[32m    };[m
+[32m+[m[32m    let predicate = match &template.predicate {[m
+[32m+[m[32m        spargebra::term::NamedNodePattern::NamedNode(n) => {[m
+[32m+[m[32m            NamedNode::new_unchecked(n.as_str())[m
+[32m+[m[32m        }[m
+[32m+[m[32m        spargebra::term::NamedNodePattern::Variable(v) => {[m
+[32m+[m[32m            let term = solution.get(v.as_str())?;[m
+[32m+[m[32m            match term {[m
+[32m+[m[32m                Term::NamedNode(n) => n.clone(),[m
+[32m+[m[32m                _ => return None,[m
+[32m+[m[32m            }[m
+[32m+[m[32m        }[m
+[32m+[m[32m    };[m
+[32m+[m[32m    let object = match &template.object {[m
+[32m+[m[32m        spargebra::term::GroundTermPattern::NamedNode(n) => {[m
+[32m+[m[32m            Term::from(NamedNode::new_unchecked(n.as_str()))[m
+[32m+[m[32m        }[m
+[32m+[m[32m        spargebra::term::GroundTermPattern::Literal(l) => {[m
+[32m+[m[32m            Term::from(convert_literal(l.clone()))[m
+[32m+[m[32m        }[m
+[32m+[m[32m        spargebra::term::GroundTermPattern::Variable(v) => {[m
+[32m+[m[32m            solution.get(v.as_str())?.clone()[m
+[32m+[m[32m        }[m
+[32m+[m[32m        #[allow(unreachable_patterns)][m
+[32m+[m[32m        _ => return None,[m
+[32m+[m[32m    };[m
+[32m+[m[32m    let graph_name = match &template.graph_name {[m
+[32m+[m[32m        spargebra::term::GraphNamePattern::NamedNode(n) => {[m
+[32m+[m[32m            GraphName::from(NamedNode::new_unchecked(n.as_str()))[m
+[32m+[m[32m        }[m
+[32m+[m[32m        spargebra::term::GraphNamePattern::DefaultGraph => GraphName::DefaultGraph,[m
+[32m+[m[32m        spargebra::term::GraphNamePattern::Variable(v) => {[m
+[32m+[m[32m            let term = solution.get(v.as_str())?;[m
+[32m+[m[32m            match term {[m
+[32m+[m[32m                Term::NamedNode(n) => GraphName::from(n.clone()),[m
+[32m+[m[32m                _ => return None,[m
+[32m+[m[32m            }[m
+[32m+[m[32m        }[m
+[32m+[m[32m    };[m
+[32m+[m[32m    Some(Quad::new(subject, predicate, object, graph_name))[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mfn instantiate_quad_pattern([m
+[32m+[m[32m    template: &spargebra::term::QuadPattern,[m
+[32m+[m[32m    solution: &QuerySolution,[m
+[32m+[m[32m    bnode_map: &mut std::collections::HashMap<String, BlankNode>,[m
+[32m+[m[32m) -> Option<Quad> {[m
+[32m+[m[32m    let subject = match &template.subject {[m
+[32m+[m[32m        spargebra::term::TermPattern::NamedNode(n) => {[m
+[32m+[m[32m            Subject::from(NamedNode::new_unchecked(n.as_str()))[m
+[32m+[m[32m        }[m
+[32m+[m[32m        spargebra::term::TermPattern::BlankNode(b) => {[m
+[32m+[m[32m            let bn = bnode_map[m
+[32m+[m[32m                .entry(b.as_str().to_string())[m
+[32m+[m[32m                .or_insert_with(BlankNode::default);[m
+[32m+[m[32m            Subject::from(bn.clone())[m
+[32m+[m[32m        }[m
+[32m+[m[32m        spargebra::term::TermPattern::Variable(v) => {[m
+[32m+[m[32m            let term = solution.get(v.as_str())?;[m
+[32m+[m[32m            match term {[m
+[32m+[m[32m                Term::NamedNode(n) => Subject::from(n.clone()),[m
+[32m+[m[32m                Term::BlankNode(b) => Subject::from(b.clone()),[m
+[32m+[m[32m                _ => return None,[m
+[32m+[m[32m            }[m
+[32m+[m[32m        }[m
+[32m+[m[32m        #[allow(unreachable_patterns)][m
+[32m+[m[32m        _ => return None,[m
+[32m+[m[32m    };[m
+[32m+[m[32m    let predicate = match &template.predicate {[m
+[32m+[m[32m        spargebra::term::NamedNodePattern::NamedNode(n) => {[m
+[32m+[m[32m            NamedNode::new_unchecked(n.as_str())[m
+[32m+[m[32m        }[m
+[32m+[m[32m        spargebra::term::NamedNodePattern::Variable(v) => {[m
+[32m+[m[32m            let term = solution.get(v.as_str())?;[m
+[32m+[m[32m            match term {[m
+[32m+[m[32m                Term::NamedNode(n) => n.clone(),[m
+[32m+[m[32m                _ => return None,[m
+[32m+[m[32m            }[m
+[32m+[m[32m        }[m
+[32m+[m[32m    };[m
+[32m+[m[32m    let object = match &template.object {[m
+[32m+[m[32m        spargebra::term::TermPattern::NamedNode(n) => {[m
+[32m+[m[32m            Term::from(NamedNode::new_unchecked(n.as_str()))[m
+[32m+[m[32m        }[m
+[32m+[m[32m        spargebra::term::TermPattern::BlankNode(b) => {[m
+[32m+[m[32m            let bn = bnode_map[m
+[32m+[m[32m                .entry(b.as_str().to_string())[m
+[32m+[m[32m                .or_insert_with(BlankNode::default);[m
+[32m+[m[32m            Term::from(bn.clone())[m
+[32m+[m[32m        }[m
+[32m+[m[32m        spargebra::term::TermPattern::Literal(l) => {[m
+[32m+[m[32m            Term::from(convert_literal(l.clone()))[m
+[32m+[m[32m        }[m
+[32m+[m[32m        spargebra::term::TermPattern::Variable(v) => {[m
+[32m+[m[32m            solution.get(v.as_str())?.clone()[m
+[32m+[m[32m        }[m
+[32m+[m[32m        #[allow(unreachable_patterns)][m
+[32m+[m[32m        _ => return None,[m
+[32m+[m[32m    };[m
+[32m+[m[32m    let graph_name = match &template.graph_name {[m
+[32m+[m[32m        spargebra::term::GraphNamePattern::NamedNode(n) => {[m
+[32m+[m[32m            GraphName::from(NamedNode::new_unchecked(n.as_str()))[m
+[32m+[m[32m        }[m
+[32m+[m[32m        spargebra::term::GraphNamePattern::DefaultGraph => GraphName::DefaultGraph,[m
+[32m+[m[32m        spargebra::term::GraphNamePattern::Variable(v) => {[m
+[32m+[m[32m            let term = solution.get(v.as_str())?;[m
+[32m+[m[32m            match term {[m
+[32m+[m[32m                Term::NamedNode(n) => GraphName::from(n.clone()),[m
+[32m+[m[32m                _ => return None,[m
+[32m+[m[32m            }[m
+[32m+[m[32m        }[m
+[32m+[m[32m    };[m
+[32m+[m[32m    Some(Quad::new(subject, predicate, object, graph_name))[m
+[32m+[m[32m}[m
+ impl Store {[m
+[31m-    /// Creates a [Store] with the given [RdfFusionContext].[m
+[31m-    pub fn new(context: RdfFusionContext) -> Store {[m
+[31m-        Self { context }[m
+[32m+[m[32m    /// Creates a [Store] with a [MemQuadStorage] as backing storage.[m
+[32m+[m[32m    ///[m
+[32m+[m[32m    /// Equivalent to calling [Self::new_with_datafusion_config] with the default settings.[m
+[32m+[m[32m    pub fn new() -> Store {[m
+[32m+[m[32m        Self::new_with_datafusion_config([m
+[32m+[m[32m            SessionConfig::new(),[m
+[32m+[m[32m            Arc::new(RuntimeEnv::default()),[m
+[32m+[m[32m        )[m
+     }[m
+ [m
+     /// Creates a [Store] with a [MemQuadStorage] as backing storage using the given `config` and[m
+[36m@@ -128,18 +339,10 @@[m [mimpl Store {[m
+         config: SessionConfig,[m
+         runtime_env: Arc<RuntimeEnv>,[m
+     ) -> Store {[m
+[31m-        let mapping = Arc::new(MemObjectIdMapping::new());[m
+[31m-        let encoding = Arc::new(ObjectIdEncoding::new([m
+[31m-            Arc::clone(&mapping) as Arc<dyn ObjectIdMapping>[m
+[31m-        ));[m
+[31m-        let storage = MemQuadStorage::new(mapping, encoding, config.batch_size());[m
+[31m-        let context = RdfFusionContext::new(config, runtime_env, Arc::new(storage));[m
+[31m-        Self { context }[m
+[31m-    }[m
+[31m-[m
+[31m-    /// Returns a reference to the underlying [RdfFusionContext].[m
+[31m-    pub fn context(&self) -> &RdfFusionContext {[m
+[31m-        &self.context[m
+[32m+[m[32m        let storage =[m
+[32m+[m[32m            MemQuadStorage::new(Arc::new(MemObjectIdMapping::new()), config.batch_size());[m
+[32m+[m[32m        let engine = RdfFusionContext::new(config, runtime_env, Arc::new(storage));[m
+[32m+[m[32m        Self { engine }[m
+     }[m
+ [m
+     /// Executes a [SPARQL](https://www.w3.org/TR/sparql11-query/) query.[m
+[36m@@ -147,7 +350,7 @@[m [mimpl Store {[m
+     /// Usage example:[m
+     /// ```[m
+     /// use rdf_fusion::model::*;[m
+[31m-    /// use rdf_fusion::execution::results::QueryResults;[m
+[32m+[m[32m    /// use rdf_fusion::sparql::QueryResults;[m
+     /// use rdf_fusion::store::Store;[m
+     /// use futures::StreamExt;[m
+     ///[m
+[36m@@ -180,8 +383,7 @@[m [mimpl Store {[m
+     /// Usage example with a custom function serializing terms to N-Triples:[m
+     /// ```[m
+     /// use rdf_fusion::model::*;[m
+[31m-    /// use rdf_fusion::execution::results::QueryResults;[m
+[31m-    /// use rdf_fusion::execution::sparql::QueryOptions;[m
+[32m+[m[32m    /// use rdf_fusion::sparql::{QueryOptions, QueryResults};[m
+     /// use rdf_fusion::store::Store;[m
+     /// use futures::StreamExt;[m
+     ///[m
+[36m@@ -214,9 +416,8 @@[m [mimpl Store {[m
+     ///[m
+     /// Usage example serialising the explanation with statistics in JSON:[m
+     /// ```[m
+[32m+[m[32m    /// use rdf_fusion::sparql::{QueryOptions, QueryResults};[m
+     /// use rdf_fusion::store::Store;[m
+[31m-    /// use rdf_fusion::execution::sparql::QueryOptions;[m
+[31m-    /// use rdf_fusion::execution::results::QueryResults;[m
+     /// use futures::StreamExt;[m
+     ///[m
+     /// # tokio_test::block_on(async {[m
+[36m@@ -241,7 +442,7 @@[m [mimpl Store {[m
+     ) -> Result<(QueryResults, QueryExplanation), QueryEvaluationError> {[m
+         let query = query.try_into();[m
+         match query {[m
+[31m-            Ok(query) => self.context.execute_query(&query, options).await,[m
+[32m+[m[32m            Ok(query) => self.engine.execute_query(&query, options).await,[m
+             Err(err) => Err(err.into()),[m
+         }[m
+     }[m
+[36m@@ -271,13 +472,13 @@[m [mimpl Store {[m
+     /// ```[m
+     pub async fn quads_for_pattern([m
+         &self,[m
+[31m-        subject: Option<NamedOrBlankNodeRef<'_>>,[m
+[32m+[m[32m        subject: Option<SubjectRef<'_>>,[m
+         predicate: Option<NamedNodeRef<'_>>,[m
+         object: Option<TermRef<'_>>,[m
+         graph_name: Option<GraphNameRef<'_>>,[m
+     ) -> Result<QuadStream, QueryEvaluationError> {[m
+         let record_batch_stream = self[m
+[31m-            .context[m
+[32m+[m[32m            .engine[m
+             .quads_for_pattern(graph_name, subject, predicate, object)[m
+             .await?;[m
+         let solution_stream =[m
+[36m@@ -334,7 +535,7 @@[m [mimpl Store {[m
+         quad: impl Into<QuadRef<'a>>,[m
+     ) -> Result<bool, QueryEvaluationError> {[m
+         let quad = quad.into();[m
+[31m-        self.context[m
+[32m+[m[32m        self.engine[m
+             .contains(&quad)[m
+             .await[m
+             .map_err(QueryEvaluationError::from)[m
+[36m@@ -359,7 +560,7 @@[m [mimpl Store {[m
+     /// # }).unwrap();[m
+     /// ```[m
+     pub async fn len(&self) -> Result<usize, QueryEvaluationError> {[m
+[31m-        self.context.len().await.map_err(QueryEvaluationError::from)[m
+[32m+[m[32m        self.engine.len().await.map_err(QueryEvaluationError::from)[m
+     }[m
+ [m
+     /// Returns if the store is empty.[m
+[36m@@ -403,14 +604,15 @@[m [mimpl Store {[m
+     /// # Result::<_, Box<dyn std::error::Error>>::Ok(())[m
+     /// # }).unwrap();[m
+     /// ```[m
+[31m-    #[allow(clippy::unimplemented, reason = "Not production ready")][m
+[31m-    #[allow(clippy::unused_self, reason = "Not implemented")][m
+[31m-    #[allow(clippy::unused_async, reason = "Not implemented")][m
+[32m+[m[32m    //#[allow(clippy::unimplemented, reason = "Not production ready")][m
+[32m+[m[32m    //#[allow(clippy::unused_self, reason = "Not implemented")][m
+[32m+[m[32m    //#[allow(clippy::unused_async, reason = "Not implemented")][m
+[32m+[m[32m    #[allow(clippy::unused_self)][m
+     pub async fn update([m
+         &self,[m
+[31m-        _update: impl TryInto<Update, Error = impl Into<QueryEvaluationError>>,[m
+[32m+[m[32m        update: impl TryInto<Update, Error = impl Into<QueryEvaluationError>>,[m
+     ) -> Result<(), QueryEvaluationError> {[m
+[31m-        unimplemented!()[m
+[32m+[m[32m        self.update_opt(update, UpdateOptions::default()).await[m
+     }[m
+ [m
+     /// Executes a [SPARQL 1.1 update](https://www.w3.org/TR/sparql11-update/) with some options.[m
+[36m@@ -429,15 +631,156 @@[m [mimpl Store {[m
+     /// # Result::<_, Box<dyn std::error::Error>>::Ok(())[m
+     /// # }).unwrap();[m
+     /// ```[m
+[31m-    #[allow(clippy::unimplemented, reason = "Not production ready")][m
+[31m-    #[allow(clippy::unused_self, reason = "Not implemented")][m
+[31m-    #[allow(clippy::unused_async, reason = "Not implemented")][m
+[32m+[m[32m    //#[allow(clippy::unimplemented, reason = "Not production ready")][m
+[32m+[m[32m    //#[allow(clippy::unused_self, reason = "Not implemented")][m
+[32m+[m[32m    //#[allow(clippy::unused_async, reason = "Not implemented")][m
+[32m+[m[32m    #[allow(clippy::unused_self)][m
+     pub async fn update_opt([m
+         &self,[m
+[31m-        _update: impl TryInto<Update, Error = impl Into<QueryEvaluationError>>,[m
+[32m+[m[32m        update: impl TryInto<Update, Error = impl Into<QueryEvaluationError>>,[m
+         _options: impl Into<UpdateOptions>,[m
+     ) -> Result<(), QueryEvaluationError> {[m
+[31m-        unimplemented!()[m
+[32m+[m[32m        let update = update.try_into().map_err(Into::into)?;[m
+[32m+[m
+[32m+[m[32m        for (operation, outer_using) in update.into_operations_and_using() {[m
+[32m+[m[32m            match operation {[m
+[32m+[m[32m                GraphUpdateOperation::InsertData { data } => {[m
+[32m+[m[32m                    let quads: Vec<Quad> = data.into_iter().map(convert_quad).collect();[m
+[32m+[m[32m                    self.extend(quads).await.map_err(QueryEvaluationError::from)?;[m
+[32m+[m[32m                }[m
+[32m+[m[32m                GraphUpdateOperation::DeleteData { data } => {[m
+[32m+[m[32m                    for quad in data {[m
+[32m+[m[32m                        let q = convert_ground_quad(quad);[m
+[32m+[m[32m                        self.remove(&q).await.map_err(QueryEvaluationError::from)?;[m
+[32m+[m[32m                    }[m
+[32m+[m[32m                }[m
+[32m+[m[32m                GraphUpdateOperation::DeleteInsert { delete, insert, using, pattern } => {[m
+[32m+[m[32m                    let query_str = format!("SELECT * {{ {} }}", &pattern);[m
+[32m+[m[32m                    let mut query = Query::parse(&query_str, None)[m
+[32m+[m[32m                        .map_err(|e| QueryEvaluationError::InternalError(e.to_string()))?;[m
+[32m+[m
+[32m+[m[32m                    // Nur Dataset setzen wenn es NICHT das Default-Dataset ist[m
+[32m+[m[32m                    if let Some(dataset) = &using {[m
+[32m+[m[32m                        query.dataset_mut().set_default_graph(dataset.default.iter().map(|g| GraphName::NamedNode(g.clone())).collect());[m
+[32m+[m[32m                        if let Some(named_graphs) = &dataset.named {[m
+[32m+[m[32m                            query.dataset_mut().set_available_named_graphs(named_graphs.iter().map(|g| g.clone().into()).collect());[m
+[32m+[m[32m                        }[m
+[32m+[m[32m                    }[m
+[32m+[m
+[32m+[m[32m                    let results = self.query_opt(query, QueryOptions::default()).await?;[m
+[32m+[m
+[32m+[m[32m                    // Schritt 4: Lösungen sammeln[m
+[32m+[m[32m                    if let QueryResults::Solutions(mut solutions) = results {[m
+[32m+[m[32m                        let mut all_solutions: Vec<QuerySolution> = Vec::new();[m
+[32m+[m[32m                        while let Some(solution) = solutions.next().await {[m
+[32m+[m[32m                            all_solutions.push(solution?);[m
+[32m+[m[32m                        }[m
+[32m+[m
+[32m+[m[32m                        // Schritt 5: Delete-Templates instantiieren[m
+[32m+[m[32m                        for solution in &all_solutions {[m
+[32m+[m[32m                            for template in &delete {[m
+[32m+[m[32m                                if let Some(quad) = instantiate_ground_quad_pattern(template, solution) {[m
+[32m+[m[32m                                    let _ = self.remove(&quad).await;[m
+[32m+[m[32m                                }[m
+[32m+[m[32m                            }[m
+[32m+[m[32m                        }[m
+[32m+[m
+[32m+[m[32m                        // Schritt 6: Insert-Templates instantiieren[m
+[32m+[m[32m                        use std::collections::HashMap;[m
+[32m+[m[32m                        let mut bnode_map: HashMap<String, BlankNode> = HashMap::new();[m
+[32m+[m
+[32m+[m[32m                        for solution in &all_solutions {[m
+[32m+[m[32m                            for template in &insert {[m
+[32m+[m[32m                                if let Some(quad) = instantiate_quad_pattern(template, solution, &mut bnode_map) {[m
+[32m+[m[32m                                    self.extend(vec![quad]).await[m
+[32m+[m[32m                                        .map_err(QueryEvaluationError::from)?;[m
+[32m+[m[32m                                }[m
+[32m+[m[32m                            }[m
+[32m+[m[32m                        }[m
+[32m+[m[32m                    }[m
+[32m+[m[32m                }[m
+[32m+[m[32m                GraphUpdateOperation::Load { .. } => {[m
+[32m+[m[32m                    // LOAD not yet implemented[m
+[32m+[m[32m                }[m
+[32m+[m[32m                GraphUpdateOperation::Clear { graph, .. } => {[m
+[32m+[m[32m                    self.eval_clear(graph).await?;[m
+[32m+[m[32m                }[m
+[32m+[m[32m                GraphUpdateOperation::Drop { graph, .. } => {[m
+[32m+[m[32m                    self.eval_drop(graph).await?;[m
+[32m+[m[32m                }[m
+[32m+[m[32m                GraphUpdateOperation::Create { graph, silent } => {[m
+[32m+[m[32m                    let created = self.insert_named_graph(graph.as_ref()).await[m
+[32m+[m[32m                        .map_err(QueryEvaluationError::from)?;[m
+[32m+[m[32m                    if !created && !silent {[m
+[32m+[m[32m                        return Err(QueryEvaluationError::InternalError([m
+[32m+[m[32m                            format!("Graph {} already exists", graph),[m
+[32m+[m[32m                        ));[m
+[32m+[m[32m                    }[m
+[32m+[m[32m                }[m
+[32m+[m[32m            }[m
+[32m+[m[32m        }[m
+[32m+[m[32m        Ok(())[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    async fn eval_clear([m
+[32m+[m[32m        &self,[m
+[32m+[m[32m        graph: spargebra::algebra::GraphTarget,[m
+[32m+[m[32m    ) -> Result<(), QueryEvaluationError> {[m
+[32m+[m[32m        match graph {[m
+[32m+[m[32m            spargebra::algebra::GraphTarget::DefaultGraph => {[m
+[32m+[m[32m                self.clear_graph(GraphNameRef::DefaultGraph)[m
+[32m+[m[32m                    .await[m
+[32m+[m[32m                    .map_err(QueryEvaluationError::from)?;[m
+[32m+[m[32m            }[m
+[32m+[m[32m            spargebra::algebra::GraphTarget::NamedNode(node) => {[m
+[32m+[m[32m                self.clear_graph(node.as_ref())[m
+[32m+[m[32m                    .await[m
+[32m+[m[32m                    .map_err(QueryEvaluationError::from)?;[m
+[32m+[m[32m            }[m
+[32m+[m[32m            spargebra::algebra::GraphTarget::NamedGraphs => {[m
+[32m+[m[32m                let graphs = self.named_graphs().await.map_err(QueryEvaluationError::from)?;[m
+[32m+[m[32m                for graph in graphs {[m
+[32m+[m[32m                    self.clear_graph(graph.as_ref())[m
+[32m+[m[32m                        .await[m
+[32m+[m[32m                        .map_err(QueryEvaluationError::from)?;[m
+[32m+[m[32m                }[m
+[32m+[m[32m            }[m
+[32m+[m[32m            spargebra::algebra::GraphTarget::AllGraphs => {[m
+[32m+[m[32m                self.clear().await.map_err(QueryEvaluationError::from)?;[m
+[32m+[m[32m            }[m
+[32m+[m[32m        }[m
+[32m+[m[32m        Ok(())[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    async fn eval_drop([m
+[32m+[m[32m        &self,[m
+[32m+[m[32m        graph: spargebra::algebra::GraphTarget,[m
+[32m+[m[32m    ) -> Result<(), QueryEvaluationError> {[m
+[32m+[m[32m        match graph {[m
+[32m+[m[32m            spargebra::algebra::GraphTarget::DefaultGraph => {[m
+[32m+[m[32m                self.clear_graph(GraphNameRef::DefaultGraph)[m
+[32m+[m[32m                    .await[m
+[32m+[m[32m                    .map_err(QueryEvaluationError::from)?;[m
+[32m+[m[32m            }[m
+[32m+[m[32m            spargebra::algebra::GraphTarget::NamedNode(node) => {[m
+[32m+[m[32m                self.remove_named_graph(node.as_ref())[m
+[32m+[m[32m                    .await[m
+[32m+[m[32m                    .map_err(QueryEvaluationError::from)?;[m
+[32m+[m[32m            }[m
+[32m+[m[32m            spargebra::algebra::GraphTarget::NamedGraphs => {[m
+[32m+[m[32m                let graphs = self.named_graphs().await.map_err(QueryEvaluationError::from)?;[m
+[32m+[m[32m                for graph in graphs {[m
+[32m+[m[32m                    self.remove_named_graph(graph.as_ref())[m
+[32m+[m[32m                        .await[m
+[32m+[m[32m                        .map_err(QueryEvaluationError::from)?;[m
+[32m+[m[32m                }[m
+[32m+[m[32m            }[m
+[32m+[m[32m            spargebra::algebra::GraphTarget::AllGraphs => {[m
+[32m+[m[32m                self.clear().await.map_err(QueryEvaluationError::from)?;[m
+[32m+[m[32m            }[m
+[32m+[m[32m        }[m
+[32m+[m
+[32m+[m[32m        Ok(())[m
+     }[m
+ [m
+     /// Loads a RDF file under into the store.[m
+[36m@@ -447,8 +790,9 @@[m [mimpl Store {[m
+     /// Usage example:[m
+     /// ```[m
+     /// use rdf_fusion::store::Store;[m
+[32m+[m[32m    /// use rdf_fusion::io::RdfFormat;[m
+     /// use rdf_fusion::model::*;[m
+[31m-    /// use rdf_fusion::io::{RdfParser, RdfFormat};[m
+[32m+[m[32m    /// use oxrdfio::RdfParser;[m
+     ///[m
+     /// # tokio_test::block_on(async {[m
+     /// let store = Store::default();[m
+[36m@@ -484,9 +828,9 @@[m [mimpl Store {[m
+             .rename_blank_nodes()[m
+             .for_reader(reader)[m
+             .collect::<Result<Vec<_>, _>>()?;[m
+[31m-        self.context[m
+[32m+[m[32m        self.engine[m
+             .storage()[m
+[31m-            .extend(quads)[m
+[32m+[m[32m            .insert(quads)[m
+             .await[m
+             .map(|_| ())[m
+             .map_err(LoaderError::from)[m
+[36m@@ -518,9 +862,9 @@[m [mimpl Store {[m
+         quad: impl Into<QuadRef<'a>>,[m
+     ) -> Result<bool, StorageError> {[m
+         let quad = vec![quad.into().into_owned()];[m
+[31m-        self.context[m
+[32m+[m[32m        self.engine[m
+             .storage()[m
+[31m-            .extend(quad)[m
+[32m+[m[32m            .insert(quad)[m
+             .await[m
+             .map(|inserted| inserted > 0)[m
+     }[m
+[36m@@ -531,7 +875,7 @@[m [mimpl Store {[m
+         quads: impl IntoIterator<Item = impl Into<Quad>>,[m
+     ) -> Result<(), StorageError> {[m
+         let quads = quads.into_iter().map(Into::into).collect::<Vec<_>>();[m
+[31m-        self.context.storage().extend(quads).await?;[m
+[32m+[m[32m        self.engine.storage().insert(quads).await?;[m
+         Ok(())[m
+     }[m
+ [m
+[36m@@ -561,14 +905,14 @@[m [mimpl Store {[m
+         &self,[m
+         quad: impl Into<QuadRef<'a>>,[m
+     ) -> Result<bool, StorageError> {[m
+[31m-        self.context.storage().remove(quad.into()).await[m
+[32m+[m[32m        self.engine.storage().remove(quad.into()).await[m
+     }[m
+ [m
+     /// Dumps the store into a file.[m
+     ///[m
+     /// ```[m
+[31m-    /// use rdf_fusion::store::Store;[m
+     /// use rdf_fusion::io::RdfFormat;[m
+[32m+[m[32m    /// use rdf_fusion::store::Store;[m
+     ///[m
+     /// let file =[m
+     ///     "<http://example.com> <http://example.com> <http://example.com> <http://example.com> .\n"[m
+[36m@@ -604,7 +948,8 @@[m [mimpl Store {[m
+     ///[m
+     /// Usage example:[m
+     /// ```[m
+[31m-    /// use rdf_fusion::io::{RdfParser, RdfFormat};[m
+[32m+[m[32m    /// use oxrdfio::RdfParser;[m
+[32m+[m[32m    /// use rdf_fusion::io::RdfFormat;[m
+     /// use rdf_fusion::model::*;[m
+     /// use rdf_fusion::store::Store;[m
+     ///[m
+[36m@@ -657,7 +1002,7 @@[m [mimpl Store {[m
+     /// # }).unwrap();[m
+     /// ```[m
+     pub async fn named_graphs(&self) -> Result<Vec<NamedOrBlankNode>, StorageError> {[m
+[31m-        self.context.storage().named_graphs().await[m
+[32m+[m[32m        self.engine.storage().named_graphs().await[m
+     }[m
+ [m
+     /// Checks if the store contains a given graph[m
+[36m@@ -679,7 +1024,7 @@[m [mimpl Store {[m
+         &self,[m
+         graph_name: impl Into<NamedOrBlankNodeRef<'a>>,[m
+     ) -> Result<bool, QueryEvaluationError> {[m
+[31m-        self.context[m
+[32m+[m[32m        self.engine[m
+             .storage()[m
+             .contains_named_graph(graph_name.into())[m
+             .await[m
+[36m@@ -711,7 +1056,7 @@[m [mimpl Store {[m
+         &self,[m
+         graph_name: impl Into<NamedOrBlankNodeRef<'a>>,[m
+     ) -> Result<bool, StorageError> {[m
+[31m-        self.context[m
+[32m+[m[32m        self.engine[m
+             .storage()[m
+             .insert_named_graph(graph_name.into())[m
+             .await[m
+[36m@@ -741,7 +1086,7 @@[m [mimpl Store {[m
+         &self,[m
+         graph_name: impl Into<GraphNameRef<'a>>,[m
+     ) -> Result<(), StorageError> {[m
+[31m-        self.context.storage().clear_graph(graph_name.into()).await[m
+[32m+[m[32m        self.engine.storage().clear_graph(graph_name.into()).await[m
+     }[m
+ [m
+     /// Removes a graph from this store.[m
+[36m@@ -770,7 +1115,7 @@[m [mimpl Store {[m
+         &self,[m
+         graph_name: impl Into<NamedOrBlankNodeRef<'a>>,[m
+     ) -> Result<bool, StorageError> {[m
+[31m-        self.context[m
+[32m+[m[32m        self.engine[m
+             .storage()[m
+             .drop_named_graph(graph_name.into())[m
+             .await[m
+[36m@@ -796,19 +1141,19 @@[m [mimpl Store {[m
+     /// # }).unwrap();[m
+     /// ```[m
+     pub async fn clear(&self) -> Result<(), StorageError> {[m
+[31m-        self.context.storage().clear().await[m
+[32m+[m[32m        self.engine.storage().clear().await[m
+     }[m
+ [m
+     /// Optimizes the database for future workload.[m
+     ///[m
+     /// Useful to call after a batch upload or another similar operation. Usually[m
+     pub async fn optimize(&self) -> Result<(), StorageError> {[m
+[31m-        self.context.storage().optimize().await[m
+[32m+[m[32m        self.engine.storage().optimize().await[m
+     }[m
+ [m
+     /// Validates that all the store invariants hold in the data storage[m
+     pub async fn validate(&self) -> Result<(), StorageError> {[m
+[31m-        self.context.storage().validate().await[m
+[32m+[m[32m        self.engine.storage().validate().await[m
+     }[m
+ }[m
+ [m
+[36m@@ -816,9 +1161,7 @@[m [mimpl Store {[m
+ #[allow(clippy::panic_in_result_fn)][m
+ mod tests {[m
+     use super::*;[m
+[31m-    use rdf_fusion_model::{[m
+[31m-        BlankNode, GraphName, Literal, NamedNode, NamedOrBlankNode, Term,[m
+[31m-    };[m
+[32m+[m[32m    use rdf_fusion_model::{BlankNode, GraphName, Literal, NamedNode, Subject, Term};[m
+     use std::collections::HashSet;[m
+ [m
+     #[test][m
+[36m@@ -860,7 +1203,7 @@[m [mmod tests {[m
+ [m
+     #[tokio::test][m
+     async fn store() -> Result<(), QueryEvaluationError> {[m
+[31m-        let main_s = NamedOrBlankNode::from(BlankNode::default());[m
+[32m+[m[32m        let main_s = Subject::from(BlankNode::default());[m
+         let main_p = NamedNode::new("http://example.com").unwrap();[m
+         let main_o = Term::from(Literal::from(1));[m
+         let main_g = GraphName::from(BlankNode::default());[m
+[36m@@ -1123,4 +1466,4 @@[m [mmod tests {[m
+ [m
+         Ok(())[m
+     }[m
+[31m-}[m
+[32m+[m[32m}[m
+\ No newline at end of file[m

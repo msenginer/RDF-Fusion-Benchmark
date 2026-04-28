@@ -37,17 +37,19 @@ use futures::StreamExt;
 use oxrdfio::{RdfParser, RdfSerializer};
 use rdf_fusion_encoding::object_id::{ObjectIdEncoding, ObjectIdMapping};
 use rdf_fusion_execution::RdfFusionContext;
-use rdf_fusion_execution::results::{QuadStream, QueryResults, QuerySolutionStream};
+use rdf_fusion_execution::results::{QuadStream, QueryResults, QuerySolution, QuerySolutionStream};
 use rdf_fusion_execution::sparql::error::QueryEvaluationError;
 use rdf_fusion_execution::sparql::{
     Query, QueryExplanation, QueryOptions, Update, UpdateOptions,
 };
 use rdf_fusion_model::StorageError;
 use rdf_fusion_model::{
-    GraphNameRef, NamedNodeRef, NamedOrBlankNode, NamedOrBlankNodeRef, Quad, QuadRef,
-    TermRef, Variable,
+    BlankNode, GraphName, GraphNameRef, Literal, NamedNode, NamedNodeRef, NamedOrBlankNode,
+    NamedOrBlankNodeRef, Quad, QuadRef, Term, TermRef, Variable,
 };
 use rdf_fusion_storage::memory::{MemObjectIdMapping, MemQuadStorage};
+use spargebra::GraphUpdateOperation;
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::{Arc, LazyLock};
 
@@ -59,6 +61,199 @@ static QUAD_VARIABLES: LazyLock<Arc<[Variable]>> = LazyLock::new(|| {
         Variable::new_unchecked("object"),
     ])
 });
+
+// --- Helper conversion functions for SPARQL Update ---
+
+fn convert_quad(q: spargebra::term::Quad) -> Quad {
+    Quad::new(
+        NamedOrBlankNode::from(q.subject),
+        NamedNode::new_unchecked(q.predicate.as_str()),
+        convert_term(q.object),
+        convert_graph_name(q.graph_name),
+    )
+}
+
+fn convert_ground_quad(q: spargebra::term::GroundQuad) -> Quad {
+    Quad::new(
+        // GroundQuad.subject is a NamedNode (no blank nodes in ground quads)
+        NamedOrBlankNode::from(NamedNode::new_unchecked(q.subject.as_str())),
+        NamedNode::new_unchecked(q.predicate.as_str()),
+        convert_ground_term(q.object),
+        convert_graph_name(q.graph_name),
+    )
+}
+
+
+fn convert_term(t: Term) -> Term {
+    match t {
+        Term::NamedNode(n) => NamedNode::new_unchecked(n.as_str()).into(),
+        Term::BlankNode(b) => BlankNode::new_unchecked(b.as_str()).into(),
+        Term::Literal(l) => convert_literal(l).into(),
+        #[allow(unreachable_patterns)]
+        _ => todo!("RDF-star"),
+    }
+}
+
+fn convert_ground_term(t: spargebra::term::GroundTerm) -> Term {
+    match t {
+        spargebra::term::GroundTerm::NamedNode(n) => NamedNode::new_unchecked(n.as_str()).into(),
+        spargebra::term::GroundTerm::Literal(l) => convert_literal(l).into(),
+        #[allow(unreachable_patterns)]
+        _ => todo!("RDF-star"),
+    }
+}
+
+fn convert_literal(l: Literal) -> Literal {
+    if let Some(lang) = l.language() {
+        Literal::new_language_tagged_literal_unchecked(l.value(), lang)
+    } else if l.datatype().as_str() == "http://www.w3.org/2001/XMLSchema#string" {
+        Literal::new_simple_literal(l.value())
+    } else {
+        Literal::new_typed_literal(l.value(), NamedNode::new_unchecked(l.datatype().as_str()))
+    }
+}
+
+fn convert_graph_name(g: spargebra::term::GraphName) -> GraphName {
+    match g {
+        spargebra::term::GraphName::NamedNode(n) => NamedNode::new_unchecked(n.as_str()).into(),
+        spargebra::term::GraphName::DefaultGraph => GraphName::DefaultGraph,
+    }
+}
+
+fn instantiate_ground_quad_pattern(
+    template: &spargebra::term::GroundQuadPattern,
+    solution: &QuerySolution,
+) -> Option<Quad> {
+    let subject = match &template.subject {
+        spargebra::term::GroundTermPattern::NamedNode(n) => {
+            NamedOrBlankNode::from(NamedNode::new_unchecked(n.as_str()))
+        }
+        spargebra::term::GroundTermPattern::Variable(v) => {
+            let term = solution.get(v.as_str())?;
+            match term {
+                Term::NamedNode(n) => NamedOrBlankNode::from(n.clone()),
+                Term::BlankNode(b) => NamedOrBlankNode::from(b.clone()),
+                _ => return None,
+            }
+        }
+        #[allow(unreachable_patterns)]
+        _ => return None,
+    };
+    let predicate = match &template.predicate {
+        spargebra::term::NamedNodePattern::NamedNode(n) => {
+            NamedNode::new_unchecked(n.as_str())
+        }
+        spargebra::term::NamedNodePattern::Variable(v) => {
+            let term = solution.get(v.as_str())?;
+            match term {
+                Term::NamedNode(n) => n.clone(),
+                _ => return None,
+            }
+        }
+    };
+    let object = match &template.object {
+        spargebra::term::GroundTermPattern::NamedNode(n) => {
+            Term::from(NamedNode::new_unchecked(n.as_str()))
+        }
+        spargebra::term::GroundTermPattern::Literal(l) => {
+            Term::from(convert_literal(l.clone()))
+        }
+        spargebra::term::GroundTermPattern::Variable(v) => {
+            solution.get(v.as_str())?.clone()
+        }
+        #[allow(unreachable_patterns)]
+        _ => return None,
+    };
+    let graph_name = match &template.graph_name {
+        spargebra::term::GraphNamePattern::NamedNode(n) => {
+            GraphName::from(NamedNode::new_unchecked(n.as_str()))
+        }
+        spargebra::term::GraphNamePattern::DefaultGraph => GraphName::DefaultGraph,
+        spargebra::term::GraphNamePattern::Variable(v) => {
+            let term = solution.get(v.as_str())?;
+            match term {
+                Term::NamedNode(n) => GraphName::from(n.clone()),
+                _ => return None,
+            }
+        }
+    };
+    Some(Quad::new(subject, predicate, object, graph_name))
+}
+
+fn instantiate_quad_pattern(
+    template: &spargebra::term::QuadPattern,
+    solution: &QuerySolution,
+    bnode_map: &mut HashMap<String, BlankNode>,
+) -> Option<Quad> {
+    let subject = match &template.subject {
+        spargebra::term::TermPattern::NamedNode(n) => {
+            NamedOrBlankNode::from(NamedNode::new_unchecked(n.as_str()))
+        }
+        spargebra::term::TermPattern::BlankNode(b) => {
+            let bn = bnode_map
+                .entry(b.as_str().to_string())
+                .or_insert_with(BlankNode::default);
+            NamedOrBlankNode::from(bn.clone())
+        }
+        spargebra::term::TermPattern::Variable(v) => {
+            let term = solution.get(v.as_str())?;
+            match term {
+                Term::NamedNode(n) => NamedOrBlankNode::from(n.clone()),
+                Term::BlankNode(b) => NamedOrBlankNode::from(b.clone()),
+                _ => return None,
+            }
+        }
+        #[allow(unreachable_patterns)]
+        _ => return None,
+    };
+    let predicate = match &template.predicate {
+        spargebra::term::NamedNodePattern::NamedNode(n) => {
+            NamedNode::new_unchecked(n.as_str())
+        }
+        spargebra::term::NamedNodePattern::Variable(v) => {
+            let term = solution.get(v.as_str())?;
+            match term {
+                Term::NamedNode(n) => n.clone(),
+                _ => return None,
+            }
+        }
+    };
+    let object = match &template.object {
+        spargebra::term::TermPattern::NamedNode(n) => {
+            Term::from(NamedNode::new_unchecked(n.as_str()))
+        }
+        spargebra::term::TermPattern::BlankNode(b) => {
+            let bn = bnode_map
+                .entry(b.as_str().to_string())
+                .or_insert_with(BlankNode::default);
+            Term::from(bn.clone())
+        }
+        spargebra::term::TermPattern::Literal(l) => {
+            Term::from(convert_literal(l.clone()))
+        }
+        spargebra::term::TermPattern::Variable(v) => {
+            solution.get(v.as_str())?.clone()
+        }
+        #[allow(unreachable_patterns)]
+        _ => return None,
+    };
+    let graph_name = match &template.graph_name {
+        spargebra::term::GraphNamePattern::NamedNode(n) => {
+            GraphName::from(NamedNode::new_unchecked(n.as_str()))
+        }
+        spargebra::term::GraphNamePattern::DefaultGraph => GraphName::DefaultGraph,
+        spargebra::term::GraphNamePattern::Variable(v) => {
+            let term = solution.get(v.as_str())?;
+            match term {
+                Term::NamedNode(n) => GraphName::from(n.clone()),
+                _ => return None,
+            }
+        }
+    };
+    Some(Quad::new(subject, predicate, object, graph_name))
+}
+
+// --- Store ---
 
 /// An [RDF dataset](https://www.w3.org/TR/rdf11-concepts/#dfn-rdf-dataset) store.
 ///
@@ -384,60 +579,165 @@ impl Store {
     }
 
     /// Executes a [SPARQL 1.1 update](https://www.w3.org/TR/sparql11-update/).
-    ///
-    /// Usage example:
-    /// ```
-    /// // use rdf-fusion::model::*;
-    /// // use rdf-fusion::store::Store;
-    ///
-    /// # tokio_test::block_on(async {
-    /// // TODO #7: Implement Update
-    /// // let store = Store::default();
-    /// // insertion
-    /// // store
-    /// //    .update("INSERT DATA { <http://example.com> <http://example.com> <http://example.com> }").await?;
-    ///
-    /// // we inspect the store contents
-    /// // let ex = NamedNodeRef::new("http://example.com")?;
-    /// // assert!(store.contains(QuadRef::new(ex, ex, ex, GraphNameRef::DefaultGraph)).await?);
-    /// # Result::<_, Box<dyn std::error::Error>>::Ok(())
-    /// # }).unwrap();
-    /// ```
-    #[allow(clippy::unimplemented, reason = "Not production ready")]
-    #[allow(clippy::unused_self, reason = "Not implemented")]
-    #[allow(clippy::unused_async, reason = "Not implemented")]
+    #[allow(clippy::unused_self)]
     pub async fn update(
         &self,
-        _update: impl TryInto<Update, Error = impl Into<QueryEvaluationError>>,
+        update: impl TryInto<Update, Error = impl Into<QueryEvaluationError>>,
     ) -> Result<(), QueryEvaluationError> {
-        unimplemented!()
+        self.update_opt(update, UpdateOptions::default()).await
     }
 
     /// Executes a [SPARQL 1.1 update](https://www.w3.org/TR/sparql11-update/) with some options.
-    ///
-    /// ```
-    /// // use rdf-fusion::store::Store;
-    /// // use rdf-fusion::sparql::QueryOptions;
-    ///
-    /// # tokio_test::block_on(async {
-    /// // TODO #7: Implement Update
-    /// // let store = Store::default();
-    /// // store.update_opt(
-    /// //    "INSERT { ?s <http://example.com/n-triples-representation> ?n } WHERE { ?s ?p ?o BIND(<http://www.w3.org/ns/formats/N-Triples>(?s) AS ?nt) }",
-    /// //    QueryOptions::default()
-    /// //).await?;
-    /// # Result::<_, Box<dyn std::error::Error>>::Ok(())
-    /// # }).unwrap();
-    /// ```
-    #[allow(clippy::unimplemented, reason = "Not production ready")]
-    #[allow(clippy::unused_self, reason = "Not implemented")]
-    #[allow(clippy::unused_async, reason = "Not implemented")]
+    #[allow(clippy::unused_self)]
     pub async fn update_opt(
         &self,
-        _update: impl TryInto<Update, Error = impl Into<QueryEvaluationError>>,
+        update: impl TryInto<Update, Error = impl Into<QueryEvaluationError>>,
         _options: impl Into<UpdateOptions>,
     ) -> Result<(), QueryEvaluationError> {
-        unimplemented!()
+        let update = update.try_into().map_err(Into::into)?;
+
+        for (operation, outer_using) in update.into_operations_and_using() {
+
+            match operation {
+                GraphUpdateOperation::InsertData { data } => {
+                    let quads: Vec<Quad> = data.into_iter().map(convert_quad).collect();
+                    self.extend(quads).await.map_err(QueryEvaluationError::from)?;
+                }
+                GraphUpdateOperation::DeleteData { data } => {
+                    for quad in data {
+                        let q = convert_ground_quad(quad);
+                        self.remove(&q).await.map_err(QueryEvaluationError::from)?;
+                    }
+                }
+                GraphUpdateOperation::DeleteInsert { delete, insert, using: _, pattern } => {
+                    let query_str = format!("SELECT * WHERE {{ {} }}", pattern);
+                    let mut query = Query::parse(&query_str, None)
+                        .map_err(|e| QueryEvaluationError::InternalError(e.to_string()))?;
+
+                    // USING dataset anwenden
+                    if let Some(dataset) = &outer_using {
+                        if !dataset.is_default_dataset() {
+                            if let Some(defaults) = dataset.default_graph_graphs() {
+                                query.dataset_mut().set_default_graph(defaults.to_vec());
+                            }
+                            if let Some(named) = dataset.available_named_graphs() {
+                                query.dataset_mut().set_available_named_graphs(named.to_vec());
+                            }
+                        }
+                    }
+
+                    let results = self.query_opt(query, QueryOptions::default()).await?;
+
+                    if let QueryResults::Solutions(mut solutions) = results {
+                        let mut all_solutions: Vec<QuerySolution> = Vec::new();
+                        while let Some(solution) = solutions.next().await {
+                            all_solutions.push(solution?);
+                        }
+
+                        // Delete phase
+                        for solution in &all_solutions {
+                            for template in &delete {
+                                if let Some(quad) = instantiate_ground_quad_pattern(template, solution) {
+                                    let _ = self.remove(&quad).await;
+                                }
+                            }
+                        }
+
+                        // Insert phase
+                        let mut bnode_map: HashMap<String, BlankNode> = HashMap::new();
+
+                        for solution in &all_solutions {
+                            for template in &insert {
+                                if let Some(quad) = instantiate_quad_pattern(template, solution, &mut bnode_map) {
+                                    self.extend(vec![quad]).await
+                                        .map_err(QueryEvaluationError::from)?;
+                                }
+                            }
+                        }
+                    }
+                }
+                GraphUpdateOperation::Load { .. } => {
+                    // LOAD not yet implemented
+                }
+                GraphUpdateOperation::Clear { graph, .. } => {
+                    self.eval_clear(graph).await?;
+                }
+                GraphUpdateOperation::Drop { graph, .. } => {
+                    self.eval_drop(graph).await?;
+                }
+                GraphUpdateOperation::Create { graph, silent } => {
+                    let created = self.insert_named_graph(graph.as_ref()).await
+                        .map_err(QueryEvaluationError::from)?;
+                    if !created && !silent {
+                        return Err(QueryEvaluationError::InternalError(
+                            format!("Graph {} already exists", graph),
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn eval_clear(
+        &self,
+        graph: spargebra::algebra::GraphTarget,
+    ) -> Result<(), QueryEvaluationError> {
+        match graph {
+            spargebra::algebra::GraphTarget::DefaultGraph => {
+                self.clear_graph(GraphNameRef::DefaultGraph)
+                    .await
+                    .map_err(QueryEvaluationError::from)?;
+            }
+            spargebra::algebra::GraphTarget::NamedNode(node) => {
+                self.clear_graph(node.as_ref())
+                    .await
+                    .map_err(QueryEvaluationError::from)?;
+            }
+            spargebra::algebra::GraphTarget::NamedGraphs => {
+                let graphs = self.named_graphs().await.map_err(QueryEvaluationError::from)?;
+                for graph in graphs {
+                    self.clear_graph(graph.as_ref())
+                        .await
+                        .map_err(QueryEvaluationError::from)?;
+                }
+            }
+            spargebra::algebra::GraphTarget::AllGraphs => {
+                self.clear().await.map_err(QueryEvaluationError::from)?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn eval_drop(
+        &self,
+        graph: spargebra::algebra::GraphTarget,
+    ) -> Result<(), QueryEvaluationError> {
+        match graph {
+            spargebra::algebra::GraphTarget::DefaultGraph => {
+                self.clear_graph(GraphNameRef::DefaultGraph)
+                    .await
+                    .map_err(QueryEvaluationError::from)?;
+            }
+            spargebra::algebra::GraphTarget::NamedNode(node) => {
+                self.remove_named_graph(node.as_ref())
+                    .await
+                    .map_err(QueryEvaluationError::from)?;
+            }
+            spargebra::algebra::GraphTarget::NamedGraphs => {
+                let graphs = self.named_graphs().await.map_err(QueryEvaluationError::from)?;
+                for graph in graphs {
+                    self.remove_named_graph(graph.as_ref())
+                        .await
+                        .map_err(QueryEvaluationError::from)?;
+                }
+            }
+            spargebra::algebra::GraphTarget::AllGraphs => {
+                self.clear().await.map_err(QueryEvaluationError::from)?;
+            }
+        }
+
+        Ok(())
     }
 
     /// Loads a RDF file under into the store.
@@ -809,6 +1109,17 @@ impl Store {
     /// Validates that all the store invariants hold in the data storage
     pub async fn validate(&self) -> Result<(), StorageError> {
         self.context.storage().validate().await
+    }
+}
+
+/// Helper: convert a GraphTarget (from spargebra) to a GraphName
+fn graph_target_to_graph_name(target: &spargebra::algebra::GraphTarget) -> Option<GraphName> {
+    match target {
+        spargebra::algebra::GraphTarget::NamedNode(n) => {
+            Some(GraphName::from(NamedNode::new_unchecked(n.as_str())))
+        }
+        spargebra::algebra::GraphTarget::DefaultGraph => Some(GraphName::DefaultGraph),
+        _ => None, // NamedGraphs / AllGraphs not applicable for single-graph operations
     }
 }
 

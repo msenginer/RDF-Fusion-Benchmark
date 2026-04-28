@@ -396,17 +396,8 @@
 pub mod error;
 pub mod store;
 
-pub mod api {
-    pub use rdf_fusion_extensions::*;
-}
 
-pub mod encoding {
-    pub use rdf_fusion_encoding::*;
-}
 
-pub mod functions {
-    pub use rdf_fusion_functions::*;
-}
 
 pub mod io {
     pub use oxrdfio::*;
@@ -416,9 +407,6 @@ pub mod model {
     pub use rdf_fusion_model::*;
 }
 
-pub mod logical {
-    pub use rdf_fusion_logical::*;
-}
 
 pub mod execution {
     pub use rdf_fusion_execution::*;
@@ -426,4 +414,7 @@ pub mod execution {
 
 pub mod storage {
     pub use rdf_fusion_storage::*;
+}
+pub mod encoding {
+    pub use rdf_fusion_encoding::*;
 }

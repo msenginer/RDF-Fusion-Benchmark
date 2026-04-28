@@ -6,8 +6,9 @@ license.workspace = true
 readme = "README.md"
 keywords = ["RDF", "SPARQL", "graph-database", "database"]
 categories = ["database-implementations"]
-repository = "https://github.com/tobixdev/rdf-fusion"
-documentation = "https://docs.rs/rdf-fusion"
+repository = "https://github.com/oxigraph/oxigraph/tree/main/lib/oxigraph"
+homepage = "https://oxigraph.org/"
+documentation = "https://docs.rs/oxigraph"
 description = """
 a SPARQL database and RDF toolkit
 """
@@ -16,17 +17,16 @@ rust-version.workspace = true
 
 [dependencies]
 datafusion.workspace = true
-rdf-fusion-extensions.workspace = true
-rdf-fusion-encoding.workspace = true
-rdf-fusion-functions.workspace = true
 rdf-fusion-model.workspace = true
 futures.workspace = true
 rdf-fusion-execution.workspace = true
-rdf-fusion-logical.workspace = true
 rdf-fusion-storage.workspace = true
 oxrdfio.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+sparesults.workspace = true
+spargebra.workspace = true
+rdf-fusion-encoding = { version = "0.1.0", path = "../encoding" }
 
 [dev-dependencies]
 codspeed-criterion-compat = { workspace = true, features = ["async_tokio"] }

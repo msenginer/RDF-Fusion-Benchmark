@@ -36,7 +36,7 @@ jobs:
           cache-target: release
 
       - name: Install just
-        uses: extractions/setup-just@v3
+        uses: extractions/setup-just@v4
 
       - name: Run CI Setup
         run: just configure-toolchain-ci

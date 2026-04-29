@@ -24,6 +24,7 @@ tracing.workspace = true
 rdf-fusion.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
+form_urlencoded = "1.2.2"
 
 [dev-dependencies]
 codspeed-criterion-compat.workspace = true

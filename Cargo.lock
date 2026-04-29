@@ -3777,6 +3777,7 @@ dependencies = [
  "axum-test",
  "codspeed-criterion-compat",
  "datafusion",
+ "form_urlencoded",
  "futures",
  "headers",
  "headers-accept",

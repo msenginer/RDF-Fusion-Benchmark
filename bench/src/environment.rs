@@ -83,7 +83,7 @@ impl RdfFusionBenchContext {
                 .build_arc()
                 .expect("Only setting memory limit"),
         };
-        Store::new_with_datafusion_config(config, runtime_enc)
+        Store::from_env()
     }
 
     /// Creates a new folder in the results directory and uses it until [Self::pop_dir] is

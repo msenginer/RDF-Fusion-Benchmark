@@ -5,8 +5,8 @@
 #![doc(
     html_logo_url = "https://raw.githubusercontent.com/tobixdev/rdf-fusion/main/misc/logo/logo.png"
 )]
-
 //! Contains storage layer implementations for [RDF Fusion](https://docs.rs/rdf-fusion/).
-
 pub(crate) mod index;
 pub mod memory;
+pub mod oxigraph_memory;
+pub mod storage_factory;

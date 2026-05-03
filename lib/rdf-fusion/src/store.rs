@@ -332,6 +332,24 @@ impl Store {
         Self { context }
     }
 
+    /// Creates a [Store] with storage backend selected via RDF_FUSION_STORAGE environment variable.
+    ///
+    /// - RDF_FUSION_STORAGE=default or memory -> Uses default MemQuadStorage
+    /// - RDF_FUSION_STORAGE=oxigraph -> Uses legacy OxigraphMemoryStorage
+    pub fn from_env() -> Store {
+        let config = SessionConfig::new()
+            .with_batch_size(8192)
+            .with_target_partitions(1);
+
+        let storage = rdf_fusion_storage::storage_factory::create_storage_from_env();
+        let context = RdfFusionContext::new(
+            config,
+            RuntimeEnvBuilder::default().build_arc().unwrap(),
+            storage,
+        );
+        Self { context }
+    }
+    
     /// Returns a reference to the underlying [RdfFusionContext].
     pub fn context(&self) -> &RdfFusionContext {
         &self.context

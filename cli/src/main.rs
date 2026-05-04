@@ -44,10 +44,7 @@ pub async fn main() -> anyhow::Result<()> {
                     .with_memory_limit(limit * 1024 * 1024, 1f64)
                     .build_arc()?,
             };
-            let store = Store::new_with_datafusion_config(
-                SessionConfig::from_env()?,
-                runtime_env,
-            );
+            let store = Store::from_env();
             serve(store, &bind, false, cors, union_default_graph).await
         }
         Command::Convert {

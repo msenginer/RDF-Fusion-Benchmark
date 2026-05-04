@@ -16,26 +16,20 @@ const SIZE: u8 = 4;
 /// byte array. The idea is to support arbitrary byte-arrays for object ids in the future. These are
 /// the remains of one such experiment and should be furthered in the future.
 #[derive(Debug, Hash, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
-pub struct EncodedObjectId([u8; SIZE as usize]);
+pub struct EncodedObjectId(u32);
 
 impl EncodedObjectId {
     pub const SIZE: u8 = SIZE;
     pub const SIZE_I32: i32 = SIZE as i32;
 
     pub fn as_object_id(&self) -> ObjectId {
-        ObjectId::try_new(self.0).expect("EncodedObjectId has valid object id bytes")
+        ObjectId::try_new(self.0.to_be_bytes()).expect("EncodedObjectId has valid object id bytes")
     }
 }
 
 impl From<u32> for EncodedObjectId {
     fn from(value: u32) -> Self {
-        Self(value.to_ne_bytes())
-    }
-}
-
-impl AsRef<[u8]> for EncodedObjectId {
-    fn as_ref(&self) -> &[u8] {
-        &self.0
+        Self(value)
     }
 }
 
@@ -43,15 +37,6 @@ impl AsRef<[u8]> for EncodedObjectId {
 #[error("Invalid object ID.")]
 pub struct InvalidObjectIdError;
 
-impl TryFrom<&[u8]> for EncodedObjectId {
-    type Error = InvalidObjectIdError;
-
-    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        TryInto::<[u8; EncodedObjectId::SIZE as usize]>::try_into(value.as_bytes())
-            .map(Self)
-            .map_err(|_| InvalidObjectIdError)
-    }
-}
 
 #[derive(Eq, PartialEq, Debug, Clone, Copy, Hash)]
 pub struct GraphEncodedObjectId(pub Option<EncodedObjectId>);

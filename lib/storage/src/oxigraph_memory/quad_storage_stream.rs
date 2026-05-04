@@ -253,6 +253,7 @@ impl RdfQuadsRecordBatchBuilder {
 
         let mut fields: Vec<Field> = Vec::new();
         let mut arrays: Vec<Arc<dyn Array>> = Vec::new();
+        
 
         try_add_column(&self.encoding, &mut fields, &mut arrays, self.graph, true);
         try_add_column(

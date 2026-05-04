@@ -174,7 +174,8 @@ impl ExecutionPlan for MemoryQuadExec {
         Ok(Statistics {
             num_rows: Precision::Inexact(num_rows),
             total_byte_size: Precision::Inexact(num_rows * size_of::<u32>() * 4),
-            column_statistics: vec![ColumnStatistics::new_unknown(); 4],
+            //column_statistics: vec![ColumnStatistics::new_unknown(); 4],
+            column_statistics: vec![ColumnStatistics::new_unknown(); self.schema().fields().len()],
         })
     }
 }

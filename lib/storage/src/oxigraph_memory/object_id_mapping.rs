@@ -296,7 +296,7 @@ impl ObjectIdMapping for MemoryObjectIdMapping {
             let oid = oid.map(EncodedObjectId::from);
             oid.map(|oid| {
                 self.try_get_encoded_term_from_object_id(oid)
-                    .expect("Missing EncodedObjectId")
+                    .unwrap_or_else(|| panic!("Missing EncodedObjectId: {:?}, next_id: {}, id2term_len: {}", oid, self.next_id.load(Ordering::Relaxed), self.id2term.len()))
                     .clone()
             })
         });

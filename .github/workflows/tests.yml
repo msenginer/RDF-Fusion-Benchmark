@@ -31,7 +31,7 @@ jobs:
           channel: 1.91
 
       - name: Install just
-        uses: extractions/setup-just@v3
+        uses: extractions/setup-just@v4
 
       - name: Run CI Setup
         run: just configure-toolchain-ci
@@ -56,7 +56,7 @@ jobs:
           channel: 1.91.0
 
       - name: Install just
-        uses: extractions/setup-just@v3
+        uses: extractions/setup-just@v4
 
       - name: Run CI Setup
         run: just configure-toolchain-ci
@@ -81,7 +81,7 @@ jobs:
           channel: 1.91.0
 
       - name: Install just
-        uses: extractions/setup-just@v3
+        uses: extractions/setup-just@v4
 
       - name: Run CI Setup
         run: just configure-toolchain-ci
